@@ -7,6 +7,8 @@ A source-to-source compiler suite for translating between Brainfuck and C. This 
 
 Both tools include a robust set of optimizations and a suite of tests to ensure correctness.
 
+Read the wiki for a brief overview of the unfinished array accesses for c2bf.
+
 ---
 
 ## Features
