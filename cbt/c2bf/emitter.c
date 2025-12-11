@@ -386,11 +386,12 @@ void emit_putchar(FILE *out, C_Atom *atom, int *dataptr) {
             set_equals_nat(out, RESULT_INDEX, atom->val, dataptr);
             fputc('.', out);
             break;
-        case C_IDENT:
+        case C_IDENT: {
             int index = varToPos(atom->string);
             goto_index(out, dataptr, index);
             fputc('.', out);
             break;
+        }
         default:
             fail("Putchar cannot handle this type of atom: ");
     }
@@ -408,12 +409,13 @@ void emit_block(FILE *out, C_Block *block, int *dataptr) {
                 break;
             case C_STMT_DECLAREARR:
                 break;
-            case C_STMT_SETEQUALS: // CAN ONLY HANDLE SINGLETONS ON RHS
+            case C_STMT_SETEQUALS: {// CAN ONLY HANDLE SINGLETONS ON RHS
                 int index = varToPos(curr->stmt->operands[0].atom->string);
                 goto_index(out, dataptr, index);
                 emit_expr(out, curr->stmt->operands[1].expr, dataptr);
                 set_equals_var(out, index, RESULT_INDEX, dataptr);
                 break;
+            }
             case C_STMT_IF:
                 emit_expr(out, curr->stmt->operands[0].expr, dataptr);
                 // if M[IF_INDEX] == 0: block is skipped

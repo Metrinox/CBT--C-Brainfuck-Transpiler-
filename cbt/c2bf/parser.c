@@ -376,7 +376,7 @@ C_Stmt *parse_stmt(C_Token *tokens, C_Token **nexttoken) {
             *nexttoken = tokens;
             break;
 
-        case C_CHAR:
+        case C_CHAR: {
             C_Token *iden_token = tokens->next;
             iden = parse_atom_decl(iden_token, &tokens);
             symbol = tokens;
@@ -406,7 +406,8 @@ C_Stmt *parse_stmt(C_Token *tokens, C_Token **nexttoken) {
                 fail("Stmt must end with semicolon");
             }
             break;
-        case C_IDENT:
+        }
+        case C_IDENT: {
             C_Token *oldToken = tokens;
             C_Expr *expr;
             iden = parse_atom(tokens, &tokens);
@@ -434,6 +435,7 @@ C_Stmt *parse_stmt(C_Token *tokens, C_Token **nexttoken) {
             break;
         // C_IF is of format:
         // if (<expr>) {<block>}
+        }
         case C_IF:
             tokens = tokens->next;
             fail_if_not_eq(tokens->type, C_LBRAC, "parse_stmt C_IF");
@@ -495,7 +497,7 @@ C_Stmt *parse_stmt(C_Token *tokens, C_Token **nexttoken) {
             tokens = tokens->next;
             fail_if_not_eq(tokens->type, C_LBRAC, 
                 "parse_stmt: expect ( after putchar");
-            expr = parse_expr(tokens->next, &tokens);
+            C_Expr* expr  = parse_expr(tokens->next, &tokens);
             fail_if_not_eq(tokens->type, C_RBRAC, 
                 "parse_stmt: expect ) after expr C_PUTCHAR");
             tokens = tokens->next;
