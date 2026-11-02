@@ -10,8 +10,6 @@
 #define GOTO_TEMP 8
 #define TEMP_INDEX 6
 
-#define OFFSET_INDEX 6
-
 // GREATER/LESS THAN
 #define TEMP0 1
 #define TEMP1 2
@@ -26,7 +24,27 @@
 #define NOT_X 7
 #define NOT_Y 8
 
+// ARRAYS
+// The x, y, z window starts at the array's base and marches right one
+// element (ARR_STRIDE cells) at a time, carrying the index in x (decremented
+// each step), a copy of the index in y and the value to write in z.
+// PRE: pointer at x, x == y == index
+// POST: pointer at x of the window just before arr[index], x == 0
+#define ARR_MARCH_RIGHT "[-[->>>>+<<<<]>[->>>>+<<<<]>[->>>>+<<<<]>>]"
+// Marches the window back to the base using y as the counter, carrying x
+// PRE: pointer at y
+// POST: pointer at y of the window at the base, y == 0
+#define ARR_MARCH_LEFT "[-<[-<<<<+>>>>]>[-<<<<+>>>>]<<<<]"
+// copy arr[index] into x (using z as temp), then go to y
+#define ARR_READ_ELEM ">>>[-<<<+>>+>]<[->+<]<"
+// overwrite arr[index] with z, then go to y
+#define ARR_WRITE_ELEM ">>>[-]<[->+<]<"
 
+// how deeply nested the array index expression being evaluated is,
+// e.g. in a[b[i]], i is evaluated at depth 2 and b[i] at depth 1
+static int arr_depth = 0;
+// which array atom has been fetched into each slot at the current depth
+static C_Atom *slot_owner[MAX_ARR_DEPTH][ARR_SLOTS_PER_DEPTH];
 
 void goto_index(FILE *out, int *dataptr, int index) {
     // move right until *dataptr == index
@@ -42,15 +60,6 @@ void goto_index(FILE *out, int *dataptr, int index) {
 }
 
 
-
-// goes to to index given by the M[cell]
-void goto_index_cell(FILE *out, int *dataptr, int cell) {
-    goto_index(out, dataptr, cell);
-    set_equals_var(out, GOTO_TEMP, cell, dataptr);
-    fprintf(out, "[--[>>+<<-]]>");
-    set_equals_var(out, cell, GOTO_TEMP, dataptr);
-    *dataptr = cell;
-}
 
 // PRE:  
 // POST: M[dataptr] == val
@@ -98,28 +107,105 @@ void set_equals_var(FILE *out, int dest, int src, int *dataptr) {
 }
 
 
-// sets M[dest] = M[M[cell]]
-void set_equals_var_cell(FILE *out, int dest, int cell, int *dataptr) {
-    set_equals_nat(out, TEMP_INDEX, 0, dataptr);
+// returns the cell of a scalar variable, fails if it is an array
+static int scalar_pos(char *name) {
+    if (varSize(name) != 0) {
+        fprintf(stderr, "Array %s used without an index\n", name);
+        exit(1);
+    }
+    return varToPos(name);
+}
+
+// returns the base cell of an array variable, fails if it is a scalar
+static int array_pos(char *name) {
+    if (varSize(name) == 0) {
+        fprintf(stderr, "Variable %s is not an array\n", name);
+        exit(1);
+    }
+    return varToPos(name);
+}
+
+// PRE:  M[idx_cell] == index, base is the array's window
+// POST: M[dest] == arr[index], arr and M[idx_cell] unchanged (unless
+//       dest == idx_cell), window cells all 0
+void emit_arr_read(FILE *out, int base, int idx_cell, int dest, int *dataptr) {
+    set_equals_var(out, base, idx_cell, dataptr);
+    set_equals_var(out, base + 1, idx_cell, dataptr);
+    goto_index(out, dataptr, base);
+    fputs(ARR_MARCH_RIGHT ARR_READ_ELEM ARR_MARCH_LEFT, out);
+    // the march ends at a known cell no matter what the index was
+    *dataptr = base + 1;
+    // move x into dest
     set_equals_nat(out, dest, 0, dataptr);
-    // 2. Copy src to dest and temp, emptying src
-    goto_index_cell(out, dataptr, cell);
-    fputc('[', out);              // while (M[M[cell]] > 0)
-    fputc('-', out);              //   M[M[cell]]--
-    goto_index(out, dataptr, dest);
-    fputc('+', out);              //   M[dest]++
-    goto_index(out, dataptr, TEMP_INDEX);
-    fputc('+', out);              //   M[temp]++
-    goto_index_cell(out, dataptr, cell);
+    goto_index(out, dataptr, base);
+    fputs("[-", out);
+        goto_index(out, dataptr, dest);
+        fputc('+', out);
+        goto_index(out, dataptr, base);
     fputc(']', out);
-    // 3. Copy temp to src, emptying temp
-    goto_index(out, dataptr, TEMP_INDEX);
-    fputc('[', out);              // while (M[temp] > 0)
-    fputc('-', out);              //   M[temp]--
-    goto_index_cell(out, dataptr, cell);
-    fputc('+', out);              //   M[M[cell]]++
-    goto_index(out, dataptr, TEMP_INDEX);
-    fputc(']', out);
+}
+
+// PRE:  M[idx_cell] == index, M[val_cell] == value
+// POST: arr[index] == value, window cells all 0
+void emit_arr_write(FILE *out, int base, int idx_cell, int val_cell, int *dataptr) {
+    set_equals_var(out, base, idx_cell, dataptr);
+    set_equals_var(out, base + 1, idx_cell, dataptr);
+    set_equals_var(out, base + 2, val_cell, dataptr);
+    goto_index(out, dataptr, base);
+    fputs(ARR_MARCH_RIGHT ARR_WRITE_ELEM ARR_MARCH_LEFT, out);
+    *dataptr = base + 1;
+}
+
+// POST: M[dest] == value of the index expression of atom
+void emit_index(FILE *out, C_Atom *atom, int dest, int *dataptr) {
+    arr_depth++;
+    emit_expr(out, atom->offset, dataptr);
+    arr_depth--;
+    set_equals_var(out, dest, RESULT_INDEX, dataptr);
+}
+
+// If atom is an array access, evaluates it into slot k of the current depth
+// so that set_equals can later copy it like a normal variable
+void prefetch_arr(FILE *out, C_Atom *atom, int k, int *dataptr) {
+    if (atom == NULL || atom->type != C_IDENT || atom->offset == NULL) return;
+    if (arr_depth >= MAX_ARR_DEPTH) {
+        fail("Array accesses nested too deeply");
+    }
+    int base = array_pos(atom->string);
+    int slot = ARR_SLOT(arr_depth, k);
+    emit_index(out, atom, slot, dataptr);
+    emit_arr_read(out, base, slot, slot, dataptr);
+    slot_owner[arr_depth][k] = atom;
+}
+
+// returns the slot that atom was prefetched into
+static int fetched_slot(C_Atom *atom) {
+    for (int k = 0; k < ARR_SLOTS_PER_DEPTH; k++) {
+        if (slot_owner[arr_depth][k] == atom) return ARR_SLOT(arr_depth, k);
+    }
+    fail("Array access was not prefetched");
+}
+
+// arr[<expr>] = M[RESULT_INDEX]
+void emit_arr_assign(FILE *out, C_Atom *lhs, int *dataptr) {
+    int base = array_pos(lhs->string);
+    int val = ARR_SLOT(arr_depth, 0);
+    int idx = ARR_SLOT(arr_depth, 1);
+    set_equals_var(out, val, RESULT_INDEX, dataptr);
+    emit_index(out, lhs, idx, dataptr);
+    emit_arr_write(out, base, idx, val, dataptr);
+}
+
+// arr[<expr>]++ or arr[<expr>]--
+void emit_arr_incdec(FILE *out, C_Atom *atom, char op, int *dataptr) {
+    int base = array_pos(atom->string);
+    int val = ARR_SLOT(arr_depth, 0);
+    int idx = ARR_SLOT(arr_depth, 1);
+    emit_index(out, atom, idx, dataptr);
+    emit_arr_read(out, base, idx, val, dataptr);
+    goto_index(out, dataptr, val);
+    fputc(op, out);
+    emit_arr_write(out, base, idx, val, dataptr);
 }
 
 
@@ -128,22 +214,12 @@ void set_equals_var_cell(FILE *out, int dest, int cell, int *dataptr) {
 //       M[TEMP_INDEX] == 0
 void set_equals(FILE *out, int dest, C_Atom *src_atom, int *dataptr) {
     if (src_atom->type == C_IDENT) {
-        int src;
         if (src_atom->offset == NULL) {
-            src = varToPos(src_atom->string);
-            set_equals_var(out, dest, src, dataptr);
+            set_equals_var(out, dest, scalar_pos(src_atom->string), dataptr);
         } else {
-
-            src = varToPos(src_atom->string);
-            // M[RESULT_INDEX] <- <expr>
-            emit_expr(out, src_atom->offset, dataptr);
-            // M[OFFSET_INDEX] <- src
-            set_equals_var(out, OFFSET_INDEX, src, dataptr);
-            // M[OFFSET_INDEX] <- M[OFFSET_INDEX] + M[RESULT_INDEX]; 
-            // M[RESULT_INDEX] <- 0
-            emit_plus(out, OFFSET_INDEX, RESULT_INDEX, dataptr);
-            goto_index_cell(out, dataptr, OFFSET_INDEX);
-        }   
+            // array accesses were already read by prefetch_arr
+            set_equals_var(out, dest, fetched_slot(src_atom), dataptr);
+        }
     } else if (src_atom->type == C_VALUE) {
         set_equals_nat(out, dest, src_atom->val, dataptr);
     }
@@ -286,6 +362,20 @@ void emit_plus(FILE *out, int r, int t, int *dataptr) {
 // POST: dataptr is at RESULT_INDEX
 void emit_expr(FILE *out, C_Expr *expr, int *dataptr) {
     set_equals_nat(out, RESULT_INDEX, 0, dataptr);
+    if (expr->type == C_EXPR_INC || expr->type == C_EXPR_DEC) {
+        if (expr->atom1->offset != NULL) {
+            emit_arr_incdec(out, expr->atom1,
+                expr->type == C_EXPR_INC ? '+' : '-', dataptr);
+            return;
+        }
+    } else {
+        // array reads must happen before any temps are set up, since
+        // evaluating the index expression uses the same temps
+        prefetch_arr(out, expr->atom1, 0, dataptr);
+        prefetch_arr(out, expr->atom2, 1, dataptr);
+        // the index expressions leave their value in RESULT_INDEX
+        set_equals_nat(out, RESULT_INDEX, 0, dataptr);
+    }
     switch(expr->type) {
         case C_EXPR_EQUALS:
             set_equals(out, X, expr->atom1, dataptr);
@@ -347,11 +437,11 @@ void emit_expr(FILE *out, C_Expr *expr, int *dataptr) {
             goto_index(out, dataptr, RESULT_INDEX);
             break;
         case C_EXPR_INC:
-            goto_index(out, dataptr, varToPos(expr->atom1->string));
+            goto_index(out, dataptr, scalar_pos(expr->atom1->string));
             fputc('+', out);
             break;
         case C_EXPR_DEC:
-            goto_index(out, dataptr, varToPos(expr->atom1->string));
+            goto_index(out, dataptr, scalar_pos(expr->atom1->string));
             fputc('-', out);
             break;
         case C_EXPR_MULT:
@@ -380,14 +470,27 @@ void emit_expr(FILE *out, C_Expr *expr, int *dataptr) {
 
 }
 
-void emit_putchar(FILE *out, C_Atom *atom, int *dataptr) {
+void emit_putchar(FILE *out, C_Expr *expr, int *dataptr) {
+    C_Atom *atom = expr->atom1;
+    if (expr->type != C_EXPR_SINGLE) { // eg putchar(x + 1);
+        emit_expr(out, expr, dataptr);
+        goto_index(out, dataptr, RESULT_INDEX);
+        fputc('.', out);
+        return;
+    }
     switch (atom->type) {
         case C_VALUE: // immediate value, eg putchar(5);
             set_equals_nat(out, RESULT_INDEX, atom->val, dataptr);
             fputc('.', out);
             break;
         case C_IDENT: {
-            int index = varToPos(atom->string);
+            if (atom->offset != NULL) { // putchar(arr[i]);
+                emit_expr(out, expr, dataptr);
+                goto_index(out, dataptr, RESULT_INDEX);
+                fputc('.', out);
+                break;
+            }
+            int index = scalar_pos(atom->string);
             goto_index(out, dataptr, index);
             fputc('.', out);
             break;
@@ -410,7 +513,13 @@ void emit_block(FILE *out, C_Block *block, int *dataptr) {
             case C_STMT_DECLAREARR:
                 break;
             case C_STMT_SETEQUALS: {// CAN ONLY HANDLE SINGLETONS ON RHS
-                int index = varToPos(curr->stmt->operands[0].atom->string);
+                C_Atom *lhs = curr->stmt->operands[0].atom;
+                if (lhs->offset != NULL) {
+                    emit_expr(out, curr->stmt->operands[1].expr, dataptr);
+                    emit_arr_assign(out, lhs, dataptr);
+                    break;
+                }
+                int index = scalar_pos(lhs->string);
                 goto_index(out, dataptr, index);
                 emit_expr(out, curr->stmt->operands[1].expr, dataptr);
                 set_equals_var(out, index, RESULT_INDEX, dataptr);
@@ -488,7 +597,7 @@ void emit_block(FILE *out, C_Block *block, int *dataptr) {
                 fputc(']', out);
                 break;
             case C_STMT_PUTCHAR:
-                emit_putchar(out, curr->stmt->operands[0].expr->atom1, dataptr);
+                emit_putchar(out, curr->stmt->operands[0].expr, dataptr);
                 break;
             case C_STMT_EXPR:
                 emit_expr(out, curr->stmt->operands[0].expr, dataptr);

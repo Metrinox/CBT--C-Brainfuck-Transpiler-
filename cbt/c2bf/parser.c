@@ -15,12 +15,11 @@ C_Atom *parse_atom_helper(
     bool isDeclaration
 ) {
     fail_if_null(tokens);
-    C_Atom *atom = malloc(sizeof(C_Atom)); fail_if_null(atom);
+    C_Atom *atom = calloc(1, sizeof(C_Atom)); fail_if_null(atom);
     switch (tokens->type) {
         case C_VALUE:
             atom->type = C_VALUE;
             atom->val  = tokens->value;
-            atom->offset = NULL;
             *nexttoken = tokens->next;
 
             break;
@@ -92,6 +91,7 @@ void C_free_atom(C_Atom *atom) {
             break;
         case C_IDENT:
             free(atom->string);
+            if (atom->offset != NULL) C_free_expr(atom->offset);
             break;
         case C_GETCHAR:
             break;
@@ -422,6 +422,7 @@ C_Stmt *parse_stmt(C_Token *tokens, C_Token **nexttoken) {
                 stmt->optypes[1] = EXPR;
                 stmt->numOperands = 2;
             } else if (symbol->type == C_INC || symbol->type == C_DEC) {
+                C_free_atom(iden); // re-parsed as part of the expr
                 expr = parse_expr(oldToken, &tokens);
                 fail_if_not_eq(tokens->type, C_SEMICOLON, "parse_stmt C_IDENT");
                 stmt->type = C_STMT_EXPR;
@@ -461,6 +462,7 @@ C_Stmt *parse_stmt(C_Token *tokens, C_Token **nexttoken) {
                 tokens = tokens->next;
                 C_Block *false_block = parse_block(tokens, &tokens);
                 fail_if_not_eq(tokens->type, C_RCURL, "parse_stmt C_IF");
+                tokens = tokens->next;
                 stmt->type = C_STMT_IFELSE;
                 stmt->operands[2].block = false_block;
                 stmt->optypes[2] = BLOCK;
@@ -526,7 +528,8 @@ void C_print_stmt(C_Stmt *stmt) {
             break;
         case C_STMT_DECLAREARR:
             printf("char %s[%d];\n", 
-                stmt->operands[0].atom->string, stmt->operands[1].atom->val);
+                stmt->operands[0].atom->string,
+                (unsigned char)stmt->operands[1].atom->val);
             break;
         case C_STMT_SETEQUALS:
             C_print_atom(stmt->operands[0].atom);

@@ -6,20 +6,18 @@
 #include "tokenise.h"
 #include "variable-table.h"
 
-// cells 0-9 reserved for temp vars used in "if", "while", "switch", etc
-#define INITIALPOS 10
-
 VariableTable varTable = {
     .head = NULL,
     .tail = NULL,
 };
 
-static VarNode* createNode(char* str, int pos) {
+static VarNode* createNode(char* str, int pos, int size) {
     VarNode* node = malloc(sizeof(VarNode));
     assert(node != NULL);
 
     node->next = NULL;
     node->pos = pos;
+    node->size = size;
     node->str = str;
 
     return node;
@@ -43,59 +41,53 @@ static bool seen(char* str) {
 }
 
 
-// THIS IS THE ARRAY REFACTOR
-// void createVarTable(C_Block* block) {
-//     int pos = INITIALPOS;
-//     VarNode* node;
-//     for (C_Block* curr = block; curr != NULL; curr = curr->next) {
-//         if (curr->stmt->type == C_STMT_DECLARE) {
-//             if (seen(curr->stmt->operands[0].atom->string)) continue;
-//             node = createNode(curr->stmt->operands[0].atom->string, pos);
-//             if (varTable.tail == NULL) {
-//                 varTable.head = node;
-//                 varTable.tail = node;
-//             } else {
-//                 varTable.tail->next = node;
-//                 varTable.tail = node;
-//             }
-//             pos += 1;
-//         }
-//         if (curr->stmt->type == C_STMT_DECLAREARR) {
-//             if (seen(curr->stmt->operands[0].atom->string)) continue;
-//             for (int i = 0; i < curr->stmt->operands[1].atom->val; i++) {
-//                 // size_t len = strlen(curr->stmt->operands[0].atom->string);
-//                 // char *arr_index = malloc(sizeof(char) * (len + 2));
-//                 // sprintf(arr_index, "%s[%d]", curr->stmt->operands[0].atom->string, i);
-//                 node = createNode(curr->stmt->operands[0].atom->string, pos);
-//                 if (varTable.tail == NULL) {
-//                     varTable.head = node;
-//                     varTable.tail = node;
-//                 } else {
-//                     varTable.tail->next = node;
-//                     varTable.tail = node;
-//                 }
-//                 pos += 1;
-//             }
-//         }
-//     }
-// }
+static void appendNode(VarNode* node) {
+    if (varTable.tail == NULL) {
+        varTable.head = node;
+        varTable.tail = node;
+    } else {
+        varTable.tail->next = node;
+        varTable.tail = node;
+    }
+}
 
-void createVarTable(C_Token* token) {
-    int pos = INITIALPOS;
-    for (C_Token* curr = token; curr != NULL; curr = curr->next) {
-        if (curr->type == C_IDENT) {
-            if (seen(curr->string)) continue;
-            VarNode* node = createNode(curr->string, pos);
-            if (varTable.tail == NULL) {
-                varTable.head = node;
-                varTable.tail = node;
-            } else {
-                varTable.tail->next = node;
-                varTable.tail = node;
+// Walks the parsed program (recursing into nested blocks) and assigns
+// cells to every declared variable. Arrays take ARR_STRIDE cells per
+// element: the window/padding cells plus the element itself.
+static void addDecls(C_Block* block, int* pos) {
+    for (C_Block* curr = block; curr != NULL; curr = curr->next) {
+        C_Stmt* stmt = curr->stmt;
+        switch (stmt->type) {
+            case C_STMT_DECLARE:
+                if (seen(stmt->operands[0].atom->string)) break;
+                appendNode(createNode(stmt->operands[0].atom->string, *pos, 0));
+                *pos += 1;
+                break;
+            case C_STMT_DECLAREARR: {
+                int size = (unsigned char)stmt->operands[1].atom->val;
+                if (size == 0) {
+                    fprintf(stderr, "Array %s must have a positive size\n",
+                        stmt->operands[0].atom->string);
+                    exit(1);
+                }
+                if (seen(stmt->operands[0].atom->string)) break;
+                appendNode(createNode(stmt->operands[0].atom->string, *pos, size));
+                *pos += ARR_STRIDE * size;
+                break;
             }
-            pos++;
+            default:
+                for (size_t i = 0; i < stmt->numOperands; i++) {
+                    if (stmt->optypes[i] == BLOCK) {
+                        addDecls(stmt->operands[i].block, pos);
+                    }
+                }
         }
     }
+}
+
+void createVarTable(C_Block* block) {
+    int pos = INITIALPOS;
+    addDecls(block, &pos);
 }
 
 // given a variable, returns the position in brainfuck array of cells
@@ -110,13 +102,25 @@ int varToPos(char* str) {
     exit(1);
 }
 
-// int arrToPos(char* arr, int offset) {
-//     return varToPos(arr) + offset;
-// }
+// given a variable, returns its number of elements (0 if not an array)
+int varSize(char* str) {
+    for (VarNode* curr = varTable.head; curr != NULL; curr = curr->next) {
+        if (STREQ(str, curr->str)) {
+            return curr->size;
+        }
+    }
+
+    fprintf(stderr, "Variable with name: %s does not exist in table\n", str);
+    exit(1);
+}
 
 void printVarTable() {
     printf("Variable Table: \n");
     for (VarNode* curr = varTable.head; curr != NULL; curr = curr->next) {
-        printf("Variable: %s -> %d\n", curr->str, curr->pos);
+        if (curr->size == 0) {
+            printf("Variable: %s -> %d\n", curr->str, curr->pos);
+        } else {
+            printf("Array: %s[%d] -> %d\n", curr->str, curr->size, curr->pos);
+        }
     }
 }

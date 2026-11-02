@@ -54,13 +54,13 @@ int main(int argc, char* argv[]) {
 
     C_Token* nexttoken;
 
-    // Creates variable to pos table
-    // which you can acces by using: varToPos(char* str)
-    createVarTable(tokens); 
-    // printVarTable();
-
     C_Block *block = parse_block(tokens, &nexttoken);
     //C_print_block(block);
+
+    // Creates variable to pos table from the declarations in the program
+    // which you can acces by using: varToPos(char* str)
+    createVarTable(block);
+    // printVarTable();
 
 
 
