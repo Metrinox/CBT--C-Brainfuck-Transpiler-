@@ -13,6 +13,7 @@ This project provides:
 This source-to-source compiler only translates a strict subset of C to Brainfuck. The supported subset includes:
 
 - **Data types & operators**: `char`, `=`, `+`, `-`, `*`, `==`, `!`, `++`, `--`  
+- **Arrays**: `char a[N];` with N in 1..255, indexed by any expression (`a[i]`, `a[i + 1]`, `a[b[i]]`) for reads, writes, `++` and `--`. Indices are not bounds checked  
 - **Control flow**: `if`, `if-else`, `while`, `for`  
 - **Syntax elements**: `;`, `()`, `{}`, `[]`, `>`, `<`  
 - **I/O functions**: `getchar`, `putchar`

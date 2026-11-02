@@ -7,7 +7,7 @@ A source-to-source compiler suite for translating between Brainfuck and C. This 
 
 Both tools include a robust set of optimizations and a suite of tests to ensure correctness.
 
-Read the wiki for a brief overview of the unfinished array accesses for c2bf.
+c2bf now supports `char` arrays (`char a[N];`, `a[i]` reads and writes). See the wiki's Arrays page for how they are laid out in Brainfuck memory.
 
 ---
 
